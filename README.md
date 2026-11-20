@@ -154,3 +154,7 @@ Under Settings, Extra Networks:
 - Press Refresh after you add, move or rename folders and files, as you would without the extension.
 - The selection is not kept across a reload of the page. Every page opens on Auto, or on All if you set it so.
 - With `--freeze-settings` the Rows / Flat button still works, but the choice lasts only until the page is reloaded.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
