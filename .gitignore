@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+aliases.txt
+tests/
+PLAN.md
