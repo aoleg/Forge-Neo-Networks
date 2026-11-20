@@ -51,6 +51,8 @@ models/Lora/
 
 The same goes for `models/Stable-diffusion`, the embeddings folder, and every folder added with `--lora-dirs` or `--ckpt-dirs`. Folders of the same name in several of these places become one button.
 
+A folder gets a button only when it holds a model, in it or anywhere below it. Folders with none are left out: an empty folder, a folder of notes or pictures, the `.cache` and `huggingface` folders a download leaves behind. In the example, `wan` has no model of its own but still has a button, because `high` and `low` do.
+
 ## The bar
 
 Row 1, from the left:
@@ -152,6 +154,7 @@ Under Settings, Extra Networks:
 ## Good to know
 
 - Press Refresh after you add, move or rename folders and files, as you would without the extension.
+- A model is any file Forge Neo shows as a card on the page. The folder buttons are made from those cards, so the disk is not searched and a large download cache inside a model folder costs nothing.
 - The selection is not kept across a reload of the page. Every page opens on Auto, or on All if you set it so.
 - With `--freeze-settings` the Rows / Flat button still works, but the choice lasts only until the page is reloaded.
 

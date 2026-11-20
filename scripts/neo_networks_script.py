@@ -6,7 +6,7 @@ GET /forge-neo-networks/tree?page=<extra networks tab name, e.g. lora, checkpoin
 
     presets   the UI Presets on offer now, built-in ones and those added by other extensions
     matches   first-level folder -> the presets it belongs to (folders with no preset are left out)
-    tree      every folder below the page's model folders, {"name": "", "children": [{"name", "children"}, ...]}
+    tree      the folders with a model in them or below them, {"name": "", "children": [{"name", "children"}, ...]}
     items     card name -> the folder its file is in, "" for a file directly in a model folder, else "a/b"
 
 No Forge file is patched: the browser draws the bar from this data inside the stock one.
@@ -56,15 +56,27 @@ def build_payload(page: ui_extra_networks.ExtraNetworksPage) -> dict:
     roots = [os.path.abspath(str(root)) for root in page.allowed_directories_for_previews() if root]
     show_hidden = bool(getattr(shared.opts, "extra_networks_show_hidden_directories", True))
 
-    folders = tree.build_tree(roots, show_hidden=show_hidden)
+    # The folder of every model the page lists. Thousands of files share a few dozen directories, so each
+    # directory is worked out once. A copy of the dict: the page is rebuilt on another thread on Refresh.
+    folder_of_directory: dict[str, str] = {}
+    items: dict[str, str] = {}
+    for name, item in list(page.items.items()):
+        filename = item.get("filename") or ""
+        directory = os.path.dirname(filename)
+        folder = folder_of_directory.get(directory) if directory else None
+        if folder is None:
+            folder = tree.relative_folder(filename, roots)
+            if directory:
+                folder_of_directory[directory] = folder
+        items[name] = folder
+
+    # Only folders that hold a model get a button, and the models are known already: the disk is not searched.
+    folders = tree.tree_from_folders(items.values(), show_hidden=show_hidden)
     presets = current_presets()
     alias_map, problems = aliases.load(DEFAULT_ALIASES, USER_ALIASES)
     _report(problems)
 
     first_level = [child["name"] for child in folders["children"]]
-    # a copy of the dict: the page is rebuilt on another thread when Refresh is pressed
-    items = {name: tree.relative_folder(item.get("filename") or "", roots) for name, item in list(page.items.items())}
-
     return {
         "presets": presets,
         "matches": aliases.match_all(first_level, presets, alias_map),
