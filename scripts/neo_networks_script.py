@@ -1,5 +1,7 @@
 """Forge-Neo-Networks: the settings, and the route the folder bar reads its data from.
 
+POST /forge-neo-networks/layout?layout=Rows|Flat   sets and saves the setting "Folder bar: subfolders"
+
 GET /forge-neo-networks/tree?page=<extra networks tab name, e.g. lora, checkpoints, textual_inversion>
 
     presets   the UI Presets on offer now, built-in ones and those added by other extensions
@@ -24,6 +26,8 @@ DEFAULT_ALIASES = os.path.join(EXTENSION_DIR, "aliases.default.txt")
 USER_ALIASES = os.path.join(EXTENSION_DIR, "aliases.txt")
 
 ROUTE = "/forge-neo-networks/tree"
+LAYOUT_ROUTE = "/forge-neo-networks/layout"
+LAYOUTS = ("Rows", "Flat")
 SECTION = ("extra_networks", "Extra Networks")
 
 OPTION_ENABLED = "fnn_enabled"
@@ -76,8 +80,21 @@ def get_tree(page: str = ""):
     return JSONResponse(build_payload(found))
 
 
+def set_layout(layout: str = ""):
+    """The Rows / Flat button in the bar: change the setting and save it, as "Apply settings" would."""
+    if layout not in LAYOUTS:
+        raise HTTPException(status_code=400, detail="Unknown layout")
+    try:
+        shared.opts.set(OPTION_LAYOUT, layout)
+        shared.opts.save(shared.config_filename)
+    except (AssertionError, RuntimeError) as e:  # settings frozen on the command line
+        return JSONResponse({"saved": False, "reason": str(e)})
+    return JSONResponse({"saved": True, "layout": layout})
+
+
 def on_app_started(_, app: FastAPI) -> None:
     app.add_api_route(ROUTE, get_tree, methods=["GET"])
+    app.add_api_route(LAYOUT_ROUTE, set_layout, methods=["POST"])
 
 
 def on_ui_settings() -> None:
@@ -89,8 +106,9 @@ def on_ui_settings() -> None:
         OPTION_ENABLED: OptionInfo(True, "Folder bar by first-level folder and UI Preset", section=SECTION).info(
             "Forge-Neo-Networks ; off brings back the stock Dir buttons after Refresh"
         ),
-        OPTION_LAYOUT: OptionInfo("Rows", "Folder bar: subfolders", gr.Radio, {"choices": ("Rows", "Flat")}, section=SECTION).info(
-            "Rows: one row per folder level ; Flat: every subfolder of the selected first-level folder in one row"
+        OPTION_LAYOUT: OptionInfo("Rows", "Folder bar: subfolders", gr.Radio, {"choices": LAYOUTS}, section=SECTION).info(
+            "Rows: one row per folder level ; Flat: every subfolder of the selected first-level folder in one row ; "
+            "the Rows / Flat button in the bar changes this setting"
         ),
         OPTION_DEFAULT_SELECTION: OptionInfo("Auto", "Folder bar: selection when the page opens", gr.Radio, {"choices": ("Auto", "All")}, section=SECTION).info(
             "Auto: the folders that belong to the UI Preset, and the files outside any folder"

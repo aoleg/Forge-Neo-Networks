@@ -1,6 +1,14 @@
 /* Forge-Neo-Networks: the folder bar of the Extra Networks pages.
    No "display" on .fnn-bar itself: the stock tree-view toggle hides the bar element with display: none. */
 
+/* Refresh brings back the stock bar and every card. Keep both out of sight for the moment it takes to draw the
+   bar: until it is drawn (.fnn-bar) or has failed (data-fnn-failed). The script sets .fnn-on on the page only
+   while the extension is switched on. */
+.fnn-on .extra-network-dirs:not(.fnn-bar):not([data-fnn-failed]) > *,
+.fnn-on .extra-network-dirs:not(.fnn-bar):not([data-fnn-failed]) ~ .extra-network-cards > .card {
+    visibility: hidden;
+}
+
 .fnn-bar .fnn-row {
     display: flex;
     flex-wrap: wrap;
@@ -32,6 +40,17 @@
 /* a little air between Auto / All / All (preset) and the folders */
 .fnn-bar button.fnn-button.fnn-all-preset {
     margin-right: 10px;
+}
+
+/* the Rows / Flat switch, at the far end of row 1 */
+.fnn-bar button.fnn-button.fnn-layout {
+    margin-left: auto;
+    opacity: 0.65;
+    font-weight: normal;
+}
+
+.fnn-bar button.fnn-button.fnn-layout:hover {
+    opacity: 1;
 }
 
 .fnn-bar .fnn-note {

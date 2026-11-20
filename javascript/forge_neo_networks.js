@@ -3,7 +3,9 @@
 // The stock bar lists every subfolder at every depth and filters by typing the folder into the search box. This
 // one shows the first-level folders, opens the subfolders of the selected folder only, and filters by the folder a
 // card's file really sits in, so the search box stays free and works inside the selected folder. "Auto" selects
-// the folders that belong to the current UI Preset and follows the preset when it changes.
+// the folders that belong to the current UI Preset and follows the preset when it changes. The subfolders come
+// one row per level, or all in one row as paths; a button at the end of row 1 switches between the two by
+// changing the setting. Nothing is stored in the browser.
 //
 // Nothing in Forge is replaced: the rows are drawn inside the stock bar element, and the stock filter still runs
 // first. If the data cannot be fetched, the stock bar is left as it is.
@@ -12,7 +14,11 @@
     "use strict";
 
     const ROUTE = "./forge-neo-networks/tree";
+    const LAYOUT_ROUTE = "./forge-neo-networks/layout";
     const LOG = "[Forge-Neo-Networks]";
+    const FETCH_TIMEOUT = 10000;
+    const MAX_RETRIES = 2;
+    const RETRY_DELAY = 1500;
 
     /** "<tab>_<page>" (txt2img_lora, img2img_checkpoints, ...) -> state of that page */
     const states = {};
@@ -22,16 +28,63 @@
     const cardText = new WeakMap();
 
     function isEnabled() {
-        return typeof opts === "undefined" || opts.fnn_enabled !== false;
+        return setting("fnn_enabled") !== false;
     }
 
-    function defaultMode() {
-        return typeof opts !== "undefined" && opts.fnn_default_selection === "All" ? "all" : "auto";
+    function setting(name) {
+        return typeof opts === "undefined" ? undefined : opts[name];
+    }
+
+    // --- settings ----------------------------------------------------------
+
+    function currentLayout() {
+        return setting("fnn_layout") === "Flat" ? "flat" : "rows";
+    }
+
+    /** What a page shows when it opens. */
+    function initialSelection() {
+        return { mode: setting("fnn_default_selection") === "All" ? "all" : "auto", path: [] };
+    }
+
+    /**
+     * The Rows / Flat button changes the setting "Folder bar: subfolders" itself, for every browser. Nothing is
+     * kept in the browser.
+     */
+    function saveLayout(layout) {
+        const value = layout === "flat" ? "Flat" : "Rows";
+        if (typeof opts !== "undefined") opts.fnn_layout = value;
+
+        // The Settings tab still holds the old choice, and "Apply settings" sends every field it holds: tick the
+        // new choice there as well, or the next Apply would quietly put the old layout back.
+        const radio = Array.prototype.find.call(
+            gradioApp().querySelectorAll("#setting_fnn_layout input[type=radio]"),
+            function (input) {
+                return input.value === value;
+            },
+        );
+        if (radio && !radio.checked) radio.click();
+
+        fetch(LAYOUT_ROUTE + "?layout=" + encodeURIComponent(value), { method: "POST" })
+            .then(function (response) {
+                if (!response.ok) throw new Error("HTTP " + response.status);
+                return response.json();
+            })
+            .then(function (answer) {
+                if (!answer.saved) console.warn(LOG, "the layout holds until the page is reloaded:", answer.reason);
+            })
+            .catch(function (error) {
+                console.error(LOG, "the layout was not saved", error);
+            });
     }
 
     function fetchData(page) {
         if (!requests[page]) {
-            requests[page] = fetch(ROUTE + "?page=" + encodeURIComponent(page))
+            // Until the bar is drawn the cards are kept out of sight (style.css), so the request must not hang.
+            const abort = new AbortController();
+            const giveUp = setTimeout(function () {
+                abort.abort();
+            }, FETCH_TIMEOUT);
+            requests[page] = fetch(ROUTE + "?page=" + encodeURIComponent(page), { signal: abort.signal })
                 .then(function (response) {
                     if (!response.ok) throw new Error("HTTP " + response.status);
                     return response.json();
@@ -44,6 +97,7 @@
                     return data;
                 })
                 .finally(function () {
+                    clearTimeout(giveUp);
                     delete requests[page];
                 });
         }
@@ -169,6 +223,7 @@
         settleSelection(st);
         bar.textContent = "";
         bar.classList.add("fnn-bar");
+        st.layout = currentLayout();
 
         const tree = st.data.tree;
         if (!tree.children.length) return; // as stock: no folders, no bar
@@ -199,18 +254,33 @@
             if (st.matchingNames.has(node.name)) button.classList.add("fnn-match");
         });
 
+        addLayoutToggle(first, st.layout);
+
+        if (auto && !st.matching.length) {
+            addNote(bar, 'No folder belongs to the UI Preset "' + st.preset + '".');
+        } else if (st.layout === "flat") {
+            drawFlat(st, bar);
+        } else {
+            drawRows(st, bar);
+        }
+    }
+
+    /** Layout "rows": one more row for each level of the selection. */
+    function drawRows(st, bar) {
+        const tree = st.data.tree;
+
         // The folder whose subfolders make the next row, and its path.
         let node = null;
         let nodePath = [];
         if (st.mode === "folder") {
             node = childNamed(tree, st.path[0]);
             nodePath = [st.path[0]];
-        } else if (auto) {
+        } else if (st.mode === "auto") {
             if (st.matching.length === 1) {
                 // one folder for the preset: its subfolders come straight away
                 node = st.matching[0];
                 nodePath = [node.name];
-            } else if (st.matching.length > 1) {
+            } else {
                 // several folders for the preset: they make a row of their own
                 const row = addRow(bar);
                 st.matching.forEach(function (match) {
@@ -220,8 +290,6 @@
                     node = childNamed(tree, st.path[0]);
                     nodePath = [st.path[0]];
                 }
-            } else {
-                addNote(bar, 'No folder belongs to the UI Preset "' + st.preset + '".');
             }
         }
 
@@ -239,6 +307,65 @@
         }
     }
 
+    /** Every folder below `node`, parents before children, as full paths. */
+    function descendants(node, nodePath, out) {
+        node.children.forEach(function (child) {
+            const path = nodePath.concat(child.name);
+            out.push(path);
+            descendants(child, path, out);
+        });
+        return out;
+    }
+
+    /**
+     * Layout "flat": one row with every folder below the row 1 selection, each as a path. With several folders
+     * for the preset, Auto lists those folders too, and the paths start with them.
+     */
+    function drawFlat(st, bar) {
+        const tree = st.data.tree;
+        let paths = [];
+        let skip = 1; // leading path parts left out of the label
+
+        if (st.mode === "folder") {
+            paths = descendants(childNamed(tree, st.path[0]), [st.path[0]], []);
+        } else if (st.mode === "auto") {
+            if (st.matching.length === 1) {
+                paths = descendants(st.matching[0], [st.matching[0].name], []);
+            } else {
+                skip = 0;
+                st.matching.forEach(function (match) {
+                    paths.push([match.name]);
+                    descendants(match, [match.name], paths);
+                });
+            }
+        }
+        if (!paths.length) return;
+
+        const row = addRow(bar);
+        const selected = st.path.join("/");
+        paths.forEach(function (path) {
+            const full = path.join("/");
+            addButton(row, path.slice(skip).join("/"), full === selected, full, function () {
+                select(st, st.mode, path);
+            });
+        });
+    }
+
+    function addLayoutToggle(row, layout) {
+        const flat = layout === "flat";
+        const title = flat
+            ? "Subfolders: all in one row. Click for one row per level."
+            : "Subfolders: one row per level. Click for all in one row.";
+        addButton(row, flat ? "Flat" : "Rows", false, title, function () {
+            saveLayout(flat ? "rows" : "flat");
+            Object.keys(states).forEach(function (id) {
+                const st = states[id];
+                const bar = barElement(st);
+                if (st.data && bar && bar.classList.contains("fnn-bar")) draw(st);
+            });
+        }).classList.add("fnn-layout");
+    }
+
     // --- filtering ---------------------------------------------------------
 
     function textOf(card) {
@@ -254,9 +381,27 @@
         return text;
     }
 
+    /**
+     * Forge marks a card "search_only" when its file is in a folder whose name starts with a dot, or is itself a
+     * dot file, and the setting "Show the Extra Networks in hidden directories" is "When searched". The stock
+     * filter then shows it only for a search of 4 characters or more. Here it also shows when the dot folders on
+     * its way are part of the selection: selecting "krea" leaves "krea/.hidden" out, selecting "krea/.hidden"
+     * shows it. `depth` is the length of the selected path.
+     */
+    function dotFoldersSelected(folder, depth) {
+        const parts = folder ? folder.split("/") : [];
+        let found = false;
+        for (let i = 0; i < parts.length; i++) {
+            if (parts[i].charAt(0) !== ".") continue;
+            if (i >= depth) return false; // a dot folder below the selection stays hidden
+            found = true;
+        }
+        return found; // no dot folder at all: a dot file, which only a search brings up
+    }
+
     /** Is a card whose file is in `folder` ("" for a file outside any folder) inside the selection? */
     function inScope(st, folder, prefix) {
-        if (st.mode === "all") return true;
+        if (st.mode === "all" || !st.data.tree.children.length) return true;
         if (st.path.length) return folder === prefix || folder.startsWith(prefix + "/");
 
         // the Auto root
@@ -267,8 +412,8 @@
 
     /**
      * Decide which cards of this page show: inside the selection, matching the search box (the stock rule: every
-     * space-separated part must be found), and not a hidden-folder card unless the search is long enough.
-     * Runs after the stock filter and overrules it for this page's cards.
+     * space-separated part must be found), and not a hidden-folder card unless the search is long enough or its
+     * dot folders are selected. Runs after the stock filter and overrules it for this page's cards.
      */
     function applyScope(st) {
         if (!st.data) return;
@@ -285,7 +430,9 @@
                 const folder = items.get(card.dataset.name) || "";
                 let visible = inScope(st, folder, prefix);
 
-                if (visible && card.querySelector(".search_only") && term.length < 4) visible = false;
+                if (visible && term.length < 4 && card.querySelector(".search_only")) {
+                    visible = dotFoldersSelected(folder, st.path.length);
+                }
 
                 if (visible && term) {
                     const text = textOf(card);
@@ -300,39 +447,85 @@
 
     // --- keeping in step with the page -------------------------------------
 
-    /**
-     * Called after anything that may have changed the page: the stock filter ran (tab selected, Refresh, UI Preset
-     * changed), the search box changed, or the page's HTML changed. Refresh replaces the whole pane, stock bar
-     * included; the bar is then drawn again from fresh data.
-     */
-    function sync(st) {
-        const bar = barElement(st);
-        if (!bar) return; // Tree style has no bar element: nothing to do
-
-        if (bar.classList.contains("fnn-bar")) {
-            if (readPreset(st) !== st.preset) draw(st);
-            applyScope(st);
-            return;
-        }
-        if (bar.dataset.fnnFailed || st.loading || !isEnabled()) return;
-
+    /** Ask the server for the page's folders, presets and card folders, then draw the bar from them. */
+    function load(st) {
         st.loading = true;
+        st.stale = false;
         fetchData(st.page)
             .then(function (data) {
+                const target = barElement(st);
+                const stockHtml = target ? target.innerHTML : "";
+                const wasDrawn = target && target.classList.contains("fnn-bar");
                 st.data = data;
-                draw(st);
-                applyScope(st);
+                st.retries = 0;
+                try {
+                    draw(st);
+                    applyScope(st);
+                } catch (error) {
+                    if (target && !wasDrawn) {
+                        target.innerHTML = stockHtml;
+                        target.classList.remove("fnn-bar");
+                    }
+                    throw error;
+                }
             })
             .catch(function (error) {
-                // leave the stock bar in place, and do not ask again until the pane is rebuilt
                 const current = barElement(st);
+                if (current && current.classList.contains("fnn-bar")) {
+                    // a reload of a bar that is drawn: keep it and what it was drawn from
+                    console.error(LOG, st.id, error);
+                    return;
+                }
+                // Right after a start or a Reload UI the page can ask before the route is there: try again shortly.
+                if (error.name !== "AbortError" && st.retries < MAX_RETRIES) {
+                    st.retries++;
+                    setTimeout(function () {
+                        sync(st);
+                    }, RETRY_DELAY);
+                    return;
+                }
+                // leave the stock bar in place, working, and do not ask again until Refresh
                 if (current) current.dataset.fnnFailed = "1";
                 st.data = null;
+                st.retries = 0;
                 console.error(LOG, st.id, error);
+                st.stockFilter(true);
             })
             .finally(function () {
                 st.loading = false;
             });
+    }
+
+    /**
+     * Called after anything that may have changed the page: the stock filter ran (tab selected, Refresh finished,
+     * UI Preset changed; `afterFilter` is true), the search box changed, or the page's HTML changed.
+     *
+     * Refresh replaces the whole pane, stock bar included, when the cards changed; the bar is then drawn again
+     * from fresh data. When nothing changed in the cards Forge leaves the pane alone, but folders, presets and
+     * alias files may still have changed: `st.stale`, set by a click on Refresh, makes the next filter run fetch
+     * the data again.
+     */
+    function sync(st, afterFilter) {
+        const bar = barElement(st);
+        if (!bar) return; // Tree style has no bar element: nothing to do
+
+        // style.css keeps a stock bar and its cards out of sight under this class, until the bar is drawn or has failed
+        st.tabElement.classList.toggle("fnn-on", isEnabled());
+        if (st.loading) return;
+
+        if (st.stale && afterFilter && isEnabled()) {
+            delete bar.dataset.fnnFailed;
+            load(st);
+            return;
+        }
+        if (bar.classList.contains("fnn-bar")) {
+            if (readPreset(st) !== st.preset || currentLayout() !== st.layout) draw(st);
+            applyScope(st);
+            return;
+        }
+        if (bar.dataset.fnnFailed || !isEnabled()) return;
+
+        load(st);
     }
 
     function setupPage(id) {
@@ -340,19 +533,25 @@
         const tabElement = gradioApp().getElementById(id);
         if (cut < 1 || !tabElement) return;
 
+        const initial = initialSelection();
         const st = {
             id: id,
             tab: id.slice(0, cut),
             page: id.slice(cut + 1),
             data: null,
-            mode: defaultMode(),
-            path: [],
+            mode: initial.mode,
+            path: initial.path,
+            layout: "",
             preset: "",
             matching: [],
             matchingNames: new Set(),
             search: null,
             loading: false,
+            stale: false,
+            retries: 0,
             timer: null,
+            tabElement: tabElement,
+            stockFilter: extraNetworksApplyFilter[id],
         };
         states[id] = st;
 
@@ -368,14 +567,23 @@
         }
 
         // Tab selection, Refresh and a UI Preset change all go through this table.
-        const stockFilter = extraNetworksApplyFilter[id];
         extraNetworksApplyFilter[id] = function (force) {
             try {
-                stockFilter(force);
+                st.stockFilter(force);
             } finally {
-                sync(st);
+                sync(st, true);
             }
         };
+
+        // Refresh rebuilds every page of this tab on the server. The control sits in the tab bar and stays there.
+        const refresh = gradioApp().querySelector("#" + st.tab + "_extra_tabs .extra-networks-controls-div #" + id + "_extra_refresh");
+        if (refresh) {
+            refresh.addEventListener("click", function () {
+                Object.keys(states).forEach(function (other) {
+                    if (states[other].tab === st.tab) states[other].stale = true;
+                });
+            });
+        }
 
         new MutationObserver(function () {
             clearTimeout(st.timer);
